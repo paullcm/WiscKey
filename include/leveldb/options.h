@@ -6,6 +6,7 @@
 #define STORAGE_LEVELDB_INCLUDE_OPTIONS_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace leveldb {
 
@@ -152,7 +153,11 @@ struct Options {
   //
   // Default: NULL
   const FilterPolicy* filter_policy;
-
+  uint64_t clean_write_buffer_size;
+  uint64_t clean_threshold;
+  uint64_t min_clean_threshold;
+  uint64_t log_dropCount_threshold;
+  uint64_t max_vlog_size;
   // Create an Options object with default values for all fields.
   Options();
 };

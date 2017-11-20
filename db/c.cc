@@ -222,7 +222,7 @@ leveldb_iterator_t* leveldb_create_iterator(
   result->rep = db->rep->NewIterator(options->rep);
   return result;
 }
-
+/*
 const leveldb_snapshot_t* leveldb_create_snapshot(
     leveldb_t* db) {
   leveldb_snapshot_t* result = new leveldb_snapshot_t;
@@ -236,7 +236,7 @@ void leveldb_release_snapshot(
   db->rep->ReleaseSnapshot(snapshot->rep);
   delete snapshot;
 }
-
+*/
 char* leveldb_property_value(
     leveldb_t* db,
     const char* propname) {
