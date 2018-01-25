@@ -115,6 +115,7 @@ Status WriteBatch::Iterate(Handler* handler) const {
     return Status::OK();
   }
 }
+
 Status WriteBatch::Iterate(Handler* handler, uint64_t& pos, uint64_t file_numb) const {//pos是当前vlog文件的大小
   Slice input(rep_);
   if (input.size() < kHeader) {
@@ -138,14 +139,11 @@ Status WriteBatch::Iterate(Handler* handler, uint64_t& pos, uint64_t file_numb) 
           const char* now_pos = input.data();//如果是插入，解析出k和v
           size_t len = now_pos - last_pos;//计算出这条记录的大小
           last_pos = now_pos;
-          char buf[8];
-          Slice v(buf, 8);
-          EncodeFixed64(buf, (pos << 32) | (file_numb << 24) | len);
- /*         char buf[8];
-          Slice v(buf, 8);
-          EncodeFixed64(buf, (pos << 24) | len);//插入memtable中value值实际为kv记录在vlog文件的
-          //偏移以及长度，前5个字节存偏移，后3个字节存长度,意味着WriteBatch大小不能超过16M
-          //vlog不能超过1T*/
+
+          std::string v;
+          PutVarint64(&v, len);
+          PutVarint32(&v, file_numb);
+          PutVarint64(&v, pos);
           handler->Put(key, v);
           pos = pos + len;//更新pos
         } else {

@@ -74,7 +74,6 @@ class VlogTest {
       }
       memcpy(scratch, contents_.data(), n);
       *result = Slice(scratch, n);
-//      *result = Slice(contents_.data(), n);
       contents_.remove_prefix(n);
       return Status::OK();
     }
@@ -115,8 +114,10 @@ class VlogTest {
     }
   };
 
-  StringDest dest_;
-  StringSource source_;
+  StringDest* pd_;
+  StringSource* ps_;
+  StringDest& dest_;
+  StringSource& source_;
   ReportCollector report_;
   bool reading_;
   VWriter* writer_;
@@ -125,13 +126,20 @@ class VlogTest {
   // Record metadata for testing initial offset functionality
   static size_t initial_offset_record_sizes_[];
   static uint64_t initial_offset_last_record_offsets_[];
+  static uint64_t initial_offset_record_offsets_[];//每条记录头部后的位置
   static int num_initial_offset_records_;
-
  public:
-  VlogTest() : reading_(false),
-              writer_(new VWriter(&dest_)),
-              reader_(new VReader(&source_, &report_, true/*checksum*/,
+  VlogTest() :pd_(new StringDest),
+              ps_(new StringSource),
+              dest_(*pd_),
+              source_(*ps_),
+              reading_(false),
+              writer_(new VWriter(pd_)),
+              reader_(new VReader(ps_, &report_, true/*checksum*/,
                       0/*initial_offset*/)) {
+              /*writer_(new VWriter(&dest_)),*/
+              //reader_(new VReader(&source_, &report_, true[>checksum<],
+                      /*0[>initial_offset<])) {*/
   }
 
   ~VlogTest() {
@@ -139,15 +147,15 @@ class VlogTest {
     delete reader_;
   }
 
-  void ReopenForAppend() {
-    delete writer_;
-//    writer_ = new Writer(&dest_, dest_.contents_.size());
-    writer_ = new VWriter(&dest_);//符合dest_的append语义
-  }
-
   void Write(const std::string& msg) {
     ASSERT_TRUE(!reading_) << "Write() after starting to read";
-    writer_->AddRecord(Slice(msg));
+    int header_size;
+    writer_->AddRecord(Slice(msg), header_size);
+  }
+
+  void Write(const std::string& msg, int& header_size) {
+    ASSERT_TRUE(!reading_) << "Write() after starting to read";
+    writer_->AddRecord(Slice(msg), header_size);
   }
 
   size_t WrittenBytes() const {
@@ -162,7 +170,8 @@ class VlogTest {
     }
     std::string scratch;
     Slice record;
-    if (reader_->ReadRecord(&record, &scratch)) {
+    int header_size;
+    if (reader_->ReadRecord(&record, &scratch, header_size)) {
       return record.ToString();
     } else {
       return "EOF";
@@ -179,14 +188,6 @@ class VlogTest {
 
   void ShrinkSize(int bytes) {
     dest_.contents_.resize(dest_.contents_.size() - bytes);
-  }
-
-  void FixChecksum(int header_offset, int len) {
-    // Compute crc of type/len/data
-//    uint32_t crc = crc32c::Value(&dest_.contents_[header_offset+6], 1 + len);
-    uint32_t crc = crc32c::Value(&dest_.contents_[header_offset+7], len);
-    crc = crc32c::Mask(crc);
-    EncodeFixed32(&dest_.contents_[header_offset], crc);
   }
 
   void ForceError() {
@@ -211,29 +212,18 @@ class VlogTest {
   }
 //按照初始化好的长度写入num_initial_offset_records_条记录
   void WriteInitialOffsetLog() {
+      uint64_t last_record_offset = 0;
     for (int i = 0; i < num_initial_offset_records_; i++) {
+      initial_offset_last_record_offsets_[i] = last_record_offset;
       std::string record(initial_offset_record_sizes_[i],
                          static_cast<char>('a' + i));
-      Write(record);
+      int header_size;
+      Write(record, header_size);
+      initial_offset_record_offsets_[i] = last_record_offset + header_size;
+      last_record_offset += (header_size + record.size());
     }
   }
-//从指定偏移处创建vlog_reader
-  void StartReadingAt(uint64_t initial_offset) {
-    delete reader_;
-    reader_ = new VReader(&source_, &report_, true/*checksum*/, initial_offset);
-  }
-//从超过vlog文件大小的偏移处读记录会失败
-  void CheckOffsetPastEndReturnsNoRecords(uint64_t offset_past_end) {
-    WriteInitialOffsetLog();
-    reading_ = true;
-    source_.contents_ = Slice(dest_.contents_);
-    VReader* offset_reader = new VReader(&source_, &report_, true/*checksum*/,
-                                       WrittenBytes() + offset_past_end);
-    Slice record;
-    std::string scratch;
-    ASSERT_TRUE(!offset_reader->ReadRecord(&record, &scratch));
-    delete offset_reader;
-  }
+
 //从initial_offset偏移处创建vlog_reader,读取num_initial_offset_records_ - expected_record_offset条记录
 //验证读取的每条记录就是初始化时写入的记录，expected_record_offset代表的是从第几条初始化记录开始验证
   void CheckInitialOffsetRecord(uint64_t initial_offset,
@@ -241,62 +231,60 @@ class VlogTest {
     WriteInitialOffsetLog();
     reading_ = true;
     source_.contents_ = Slice(dest_.contents_);
-    VReader* offset_reader = new VReader(&source_, &report_, true/*checksum*/,
-                                       initial_offset);
-
+      source_.data = &dest_.contents_;
+    reader_->SkipToPos(initial_offset);
     // Read all records from expected_record_offset through the last one.
     ASSERT_LT(expected_record_offset, num_initial_offset_records_);
     for (; expected_record_offset < num_initial_offset_records_;
          ++expected_record_offset) {
       Slice record;
       std::string scratch;
-      ASSERT_TRUE(offset_reader->ReadRecord(&record, &scratch));
+      int header_size;
+      //ASSERT_TRUE(offset_reader->ReadRecord(&record, &scratch, header_size));
+      ASSERT_TRUE(reader_->ReadRecord(&record, &scratch, header_size));
       ASSERT_EQ(initial_offset_record_sizes_[expected_record_offset],
                 record.size());
       ASSERT_EQ((char)('a' + expected_record_offset), record.data()[0]);
     }
-    delete offset_reader;
   }
 //这个是测试vlog_read的read接口
   void CheckReadRecord() {
     WriteInitialOffsetLog();
     reading_ = true;
     source_.contents_ = Slice(dest_.contents_);
-    VReader* offset_reader = new VReader(&source_, &report_, true/*checksum*/);
+      source_.data = &dest_.contents_;
 
     // Read all records from expected_record_offset through the last one.
     int expected_record_offset = 0;
-    ASSERT_LT(expected_record_offset, num_initial_offset_records_);
     size_t pos = 0;
     char buf[3*kBlockSize];
     for (; expected_record_offset < num_initial_offset_records_;
          ++expected_record_offset) {
       std::string scratch;
-      pos += kHeaderSize;
-      ASSERT_TRUE(offset_reader->Read(buf, initial_offset_record_sizes_[expected_record_offset], pos));
+      pos = initial_offset_record_offsets_[expected_record_offset];
+      ASSERT_TRUE(reader_->Read(buf, initial_offset_record_sizes_[expected_record_offset], pos));
       ASSERT_EQ((char)('a' + expected_record_offset), buf[0]);
       ASSERT_EQ((char)('a' + expected_record_offset), buf[initial_offset_record_sizes_[expected_record_offset]-1]);
-      pos += initial_offset_record_sizes_[expected_record_offset];
     }
 
-      ASSERT_TRUE(offset_reader->Read(buf, initial_offset_record_sizes_[1], log::kBlockSize + kHeaderSize));
+      ASSERT_TRUE(reader_->Read(buf, initial_offset_record_sizes_[1], initial_offset_record_offsets_[1]));
       ASSERT_EQ((char)('b'), buf[0]);
       ASSERT_EQ((char)('b'), buf[initial_offset_record_sizes_[1]-1]);
 
-      ASSERT_TRUE(!offset_reader->Read(buf,log::kBlockSize, pos - 100));
-    delete offset_reader;
   }
 };
 
 size_t VlogTest::initial_offset_record_sizes_[] =
-    {log::kBlockSize - kHeaderSize,//刚好占满一个block
-    log::kBlockSize - kHeaderSize - 2,//用于一个block的剩余空间不足kheadsize
+    {log::kBlockSize - 4 - 3,//刚好占满一个block,kBlockSize可以用3个字节的变量表示其长度
+    log::kBlockSize - 4 - 1,//用于一个block的剩余空间不足kheadsize
      100,//slice会回退2，读取kBlockSize - 2个字节到读缓冲区中
      100,//record完全在刚读的读缓冲区中
      log::kBlockSize,//读完读缓冲区内容后， 该条记录剩余待读部分小于kblocksize/2
      2 * log::kBlockSize - 1000,  //读完读缓冲区内容后， 剩余部分大于kblocksize/2
      1
     };
+uint64_t VlogTest::initial_offset_last_record_offsets_[] ={0,0,0,0,0,0,0};
+uint64_t VlogTest::initial_offset_record_offsets_[] ={0,0,0,0,0,0,0};
 
 // LogTest::initial_offset_last_record_offsets_ must be defined before this.
 int VlogTest::num_initial_offset_records_ =
@@ -326,62 +314,6 @@ TEST(VlogTest, ManyBlocks) {
   for (int i = 0; i < 100; i++) {
     ASSERT_EQ(NumberString(i), Read());
   }
-  ASSERT_EQ("EOF", Read());
-}
-
-TEST(VlogTest, MarginalTrailer) {
-  // Make a trailer that is exactly the same length as an empty record.
-  const int n = kBlockSize - 2*kHeaderSize;
-  Write(BigString("foo", n));
-  ASSERT_EQ(kBlockSize - kHeaderSize, WrittenBytes());
-  Write("");
-  Write("bar");
-  ASSERT_EQ(BigString("foo", n), Read());
-  ASSERT_EQ("", Read());
-  ASSERT_EQ("bar", Read());
-  ASSERT_EQ("EOF", Read());
-}
-
-
-TEST(VlogTest, MarginalTrailer2) {
-  // Make a trailer that is exactly the same length as an empty record.
-  const int n = kBlockSize - 2*kHeaderSize;
-  Write(BigString("foo", n));
-  ASSERT_EQ(kBlockSize - kHeaderSize, WrittenBytes());
-  Write("bar");
-  ASSERT_EQ(BigString("foo", n), Read());
-  ASSERT_EQ("bar", Read());
-  ASSERT_EQ("EOF", Read());
-  ASSERT_EQ(0, DroppedBytes());
-  ASSERT_EQ("", ReportMessage());
-}
-
-TEST(VlogTest, ShortTrailer) {
-  const int n = kBlockSize - 2*kHeaderSize + 4;
-  Write(BigString("foo", n));
-  ASSERT_EQ(kBlockSize - kHeaderSize + 4, WrittenBytes());//block剩下的空间不够容纳一个head
-  Write("");
-  Write("bar");
-  ASSERT_EQ(BigString("foo", n), Read());
-  ASSERT_EQ("", Read());
-  ASSERT_EQ("bar", Read());
-  ASSERT_EQ("EOF", Read());
-}
-
-TEST(VlogTest, AlignedEof) {
-  const int n = kBlockSize - 2*kHeaderSize + 4;
-  Write(BigString("foo", n));
-  ASSERT_EQ(kBlockSize - kHeaderSize + 4, WrittenBytes());
-  ASSERT_EQ(BigString("foo", n), Read());
-  ASSERT_EQ("EOF", Read());
-}
-
-TEST(VlogTest, OpenForAppend) {
-  Write("hello");
-  ReopenForAppend();
-  Write("world");
-  ASSERT_EQ("hello", Read());
-  ASSERT_EQ("world", Read());
   ASSERT_EQ("EOF", Read());
 }
 
@@ -429,9 +361,9 @@ TEST(VlogTest, BadLengthAtEndIsIgnored) {
 
 TEST(VlogTest, ChecksumMismatch) {
   Write("foo");
-  IncrementByte(0, 10);
+  IncrementByte(0, 1);
   ASSERT_EQ("EOF", Read());
-  ASSERT_EQ(10, DroppedBytes());
+  ASSERT_EQ(4 + 1 + 3, DroppedBytes());
   ASSERT_EQ("OK", MatchError("checksum mismatch"));
 }
 
@@ -440,9 +372,9 @@ TEST(VlogTest, PartialLastIsIgnored1) {
   // Cause a bad record length in the LAST block.
   ShrinkSize(1);
   ASSERT_EQ("EOF", Read());
-  ASSERT_EQ("", ReportMessage());
-  ASSERT_EQ(0, DroppedBytes());
+  ASSERT_EQ("OK", MatchError("last record not full"));
 }
+
 TEST(VlogTest, PartialLastIsIgnored2) {
   Write(BigString("bar", 2*kBlockSize));//超过blocksize/2
   // Cause a bad record length in the LAST block.
@@ -458,23 +390,6 @@ TEST(VlogTest, ReadStart) {
 
 TEST(VlogTest, ReadSecondOneOff) {
   CheckInitialOffsetRecord(kBlockSize, 1);
-}
-
-TEST(VlogTest, ReadThirdOneOff) {
-  CheckInitialOffsetRecord(kBlockSize + kBlockSize - 2, 2);
-}
-
-TEST(VlogTest, ReadFourthOneOff) {
-  CheckInitialOffsetRecord(kBlockSize + kBlockSize - 2 + 100 + kHeaderSize, 3);
-}
-
-
-TEST(VlogTest, ReadEnd) {
-  CheckOffsetPastEndReturnsNoRecords(0);
-}
-
-TEST(VlogTest, ReadPastEnd) {
-  CheckOffsetPastEndReturnsNoRecords(5);
 }
 
 TEST(VlogTest, Read) {
