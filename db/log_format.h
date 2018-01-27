@@ -28,8 +28,8 @@ static const int kBlockSize = 32768;
 
 // Header is checksum (4 bytes), length (2 bytes), type (1 byte).
 static const int kHeaderSize = 4 + 2 + 1;
-static const int kVHeaderSize = 4 + 3;//kHeaderSize是一般log记录的头部，因为vlog没有Block的划分,所以
-//不需要type，vlog每条记录的头部是checksum和3字节的length，意味着插入vlog的记录长度不能超过16M
+static const int kVHeaderMaxSize = 4 + 10;//10是Varint64变量最多需要的字节数
+//不需要type，vlog每条记录的头部是checksum和Varint64变量表示的length
 
 }  // namespace log
 }  // namespace leveldb

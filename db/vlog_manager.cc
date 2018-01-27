@@ -1,12 +1,12 @@
 #include "db/vlog_reader.h"
 #include "db/vlog_manager.h"
 #include "util/coding.h"
-#include <iostream>
 
 namespace leveldb {
 
     VlogManager::VlogManager(uint64_t clean_threshold):clean_threshold_(clean_threshold),now_vlog_(0),cleaning_vlog_(0)
-    {}
+    {
+    }
 
     VlogManager::~VlogManager()
     {
@@ -22,7 +22,6 @@ namespace leveldb {
         VlogInfo v;
         v.vlog_ = vlog;
         v.count_ = 0;
- //       bool b = manager_.insert(std::make_pair(vlog_numb, VlogInfo(vlog, 0))).second;
         bool b = manager_.insert(std::make_pair(vlog_numb, v)).second;
         assert(b);
         now_vlog_ = vlog_numb;
@@ -33,17 +32,16 @@ namespace leveldb {
         now_vlog_ = vlog_numb;
     }
 
-    void VlogManager::RemoveCleaningVlog()
+    void VlogManager::RemoveCleaningVlog()//与GetVlogToClean对应
     {
         assert(cleaning_vlog_>0);
         std::tr1::unordered_map<uint64_t, VlogInfo>::const_iterator iter = manager_.find (cleaning_vlog_);
         delete iter->second.vlog_;
         manager_.erase(iter);
         cleaning_vlog_set_.erase(cleaning_vlog_);
-   //     std::cout<<cleaning_vlog_<<" clear "<<std::endl;
         cleaning_vlog_=0;
     }
-    void VlogManager::RemoveCleaningVlog(uint64_t vlog_numb)
+    void VlogManager::RemoveCleaningVlog(uint64_t vlog_numb)//与GetVlogsToClean对应
     {
         std::tr1::unordered_map<uint64_t, VlogInfo>::const_iterator iter = manager_.find (vlog_numb);
         delete iter->second.vlog_;
@@ -59,7 +57,6 @@ namespace leveldb {
             iter->second.count_++;
             if(iter->second.count_ >= clean_threshold_ && vlog_numb != now_vlog_)
             {
- //               std::cout<<vlog_numb<<" clear "<<iter->second.count_<<std::endl;
                 cleaning_vlog_set_.insert(vlog_numb);
             }
          }//否则说明该vlog已经clean过了
@@ -73,9 +70,19 @@ namespace leveldb {
         {
             if(iter->second.count_ >= clean_threshold && iter->first != now_vlog_)
                 res.insert(iter->first);
- //           std::cout<<iter->first<< " "<<iter->second.count_<<std::endl;
         }
         return res;
+    }
+
+    uint64_t VlogManager::GetVlogToClean()
+    {
+        if(cleaning_vlog_ == 0)//数据库open时如果有需要恢复的clean时cleaning_vlog_不为0,
+        {
+            std::tr1::unordered_set<uint64_t>::iterator iter = cleaning_vlog_set_.begin();
+            assert(iter != cleaning_vlog_set_.end());
+            cleaning_vlog_ = *iter;
+        }
+        return cleaning_vlog_;
     }
 
     log::VReader* VlogManager::GetVlog(uint64_t vlog_numb)
@@ -92,17 +99,6 @@ namespace leveldb {
         return !cleaning_vlog_set_.empty();
     }
 
- //   log::VReader* VlogManager::GetVlogToClean(uint64_t& vlog_numb)
-    uint64_t VlogManager::GetVlogToClean()
-    {
-        if(cleaning_vlog_ == 0)
-        {
-            std::tr1::unordered_set<uint64_t>::iterator iter = cleaning_vlog_set_.begin();
-            assert(iter != cleaning_vlog_set_.end());
-            cleaning_vlog_ = *iter;
-        }
-        return cleaning_vlog_;
-    }
     bool VlogManager::Serialize(std::string& val)
     {
         val.clear();
@@ -141,14 +137,13 @@ namespace leveldb {
         return true;
     }
 
-    void VlogManager::Recover(uint64_t vlog_numb, uint64_t tail)
+    void VlogManager::Recover(uint64_t vlog_numb)
     {
         std::tr1::unordered_map<uint64_t, VlogInfo>::iterator iter = manager_.find(vlog_numb);
         if(iter != manager_.end())
         {
             assert(iter->second.count_ >= clean_threshold_);
-            iter->second.vlog_->SetCleanPos(tail);
-        cleaning_vlog_ = vlog_numb;
+            cleaning_vlog_ = vlog_numb;
         }
     }
 

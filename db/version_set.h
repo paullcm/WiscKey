@@ -189,8 +189,7 @@ class VersionSet {
 
   // Allocate and return a new file number
   uint64_t NewFileNumber() { return next_file_number_++; }
-//  uint32_t NewVlogNumber() { return log_number_+1; }
-  uint32_t NewVlogNumber() { return ++log_number_; }
+  uint64_t NewVlogNumber() { return ++log_number_; }
 
   // Arrange to reuse "file_number" unless a newer file number has
   // already been allocated.

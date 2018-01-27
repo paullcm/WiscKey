@@ -3,7 +3,6 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "db/db_impl.h"
-
 #include <algorithm>
 #include <set>
 #include <string>
@@ -36,7 +35,7 @@
 #include "util/logging.h"
 #include "util/mutexlock.h"
 #include "db/garbage_collector.h"
-#include <iostream>
+
 namespace leveldb {
 
 const int kNumNonTableCacheFiles = 10;
@@ -132,26 +131,22 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       bg_cv_(&mutex_),
       mem_(NULL),
       imm_(NULL),
-//      logfile_(NULL),
       logfile_number_(0),
- //     vlogfile_number_(0),
       vlog_(NULL),
       vlogfile_(NULL),
       vlog_head_(0),
       check_point_(0),
       next_check_point_(0),
       drop_count_(0),
-  vlog_manager_(options_.clean_threshold),
-    vloginfo_file_number_(0),
-    vloginfo_pos_(0),
+      vlog_manager_(options_.clean_threshold),
+      vloginfo_file_number_(0),
+      vloginfo_pos_(0),
       seed_(0),
       tmp_batch_(new WriteBatch),
       bg_compaction_scheduled_(false),
       bg_clean_scheduled_(false),
       manual_compaction_(NULL) {
   has_imm_.Release_Store(NULL);
- // vlog_reader_ = NULL;
-  //vlog_reader_file_ = NULL;
   // Reserve ten files or so for other uses and give the rest to TableCache.
   const int table_cache_size = options_.max_open_files - kNumNonTableCacheFiles;
   table_cache_ = new TableCache(dbname_, &options_, table_cache_size);
@@ -176,13 +171,9 @@ DBImpl::~DBImpl() {
   if (mem_ != NULL) mem_->Unref();
   if (imm_ != NULL) imm_->Unref();
   delete tmp_batch_;
-//  delete log_;
-//  delete logfile_;
- delete vlog_;
- delete vlogfile_;
+  delete vlog_;
+  delete vlogfile_;
   delete table_cache_;
-//delete vlog_reader_;
-//delete vlog_reader_file_;
 
   if (owns_info_log_) {
     delete options_.info_log;
@@ -356,51 +347,52 @@ Status DBImpl::Recover(VersionEdit* edit, bool *save_manifest) {
              static_cast<int>(expected.size()));
     return Status::Corruption(buf, TableFileName(dbname_, *(expected.begin())));
   }
-        ReadOptions options;
-        std::string val;
-        SequenceNumber snapshot;
-        snapshot = versions_->LastSequence();
-        Version* current = versions_->current();
-        current->Ref();
-        LookupKey lkey(Slice("head"), snapshot);
-        Version::GetStats stats;
-        s = current->Get(options, lkey, &val, &stats);
-        std::sort(logs.begin(), logs.end());
-        if(s.ok()&&!logs.empty())
+    ReadOptions options;
+    std::string val;
+    SequenceNumber snapshot;
+    snapshot = versions_->LastSequence();
+    Version* current = versions_->current();
+    current->Ref();
+    LookupKey lkey(Slice("head"), snapshot);
+    Version::GetStats stats;
+    s = current->Get(options, lkey, &val, &stats);
+    std::sort(logs.begin(), logs.end());
+    if(s.ok()&&!logs.empty())
+    {
+        uint64_t code = DecodeFixed64(val.data());
+        uint64_t vlog_numb = code & 0xffffff;
+        if(vlog_numb == logs[0])
         {
-            uint64_t code = DecodeFixed64(val.data());
-            uint64_t vlog_numb = code & 0xffffff;
-            if(vlog_numb == logs[0])
-            {
-                vlog_head_ = code>>24;
-            }
-            else
-            {
-    //上次刚好生成新的log文件，记录的head是上一个log文件的末尾，并且成功应用到了version
-                vlog_head_ = 0;
-                assert(vlog_numb < logs[0]);
-            }
-            check_point_ = vlog_head_;//check_point代表已经被刷进sst文件的最新重启点的位置
+            vlog_head_ = code>>24;
         }
         else
         {
-            vlog_head_ =0;
-            check_point_=0;
+//上次刚好生成新的log文件，记录的head是上一个log文件的末尾，并且成功应用到了version
+            vlog_head_ = 0;
+            assert(vlog_numb < logs[0]);
+            assert(logs.size() == 1);
         }
-        current->Unref();
-        s = Status::OK();
-       for (size_t i = 0; i < logs.size(); i++) {
-            s = RecoverLogFile(logs[i], (i == logs.size() - 1), save_manifest, edit,
-                    &max_sequence);
-            if(!s.ok())
-                return s;
-            versions_->MarkVlogNumberUsed(logs[i]);
-        }
+        check_point_ = vlog_head_;//check_point代表已经被刷进sst文件的最新重启点的位置
+    }
+    else
+    {
+        vlog_head_ =0;
+        check_point_=0;
+    }
+    current->Unref();
+    s = Status::OK();
+   for (size_t i = 0; i < logs.size(); i++) {
+        s = RecoverLogFile(logs[i], (i == logs.size() - 1), save_manifest, edit,
+                &max_sequence);
+        if(!s.ok())
+            return s;
+        versions_->MarkVlogNumberUsed(logs[i]);
+    }
 
-        if(versions_->LastSequence() < max_sequence) {
-            versions_->SetLastSequence(max_sequence);
-        }
-        return Status::OK();
+    if(versions_->LastSequence() < max_sequence) {
+        versions_->SetLastSequence(max_sequence);
+    }
+    return Status::OK();
 }
 
 Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
@@ -456,7 +448,8 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
   WriteBatch batch;
   int compactions = 0;
   MemTable* mem = NULL;
-  while (reader.ReadRecord(&record, &scratch) &&
+  int head_size = 0;
+  while (reader.ReadRecord(&record, &scratch, head_size) &&
          status.ok()) {
     if (record.size() < 12) {
       reporter.Corruption(
@@ -469,7 +462,7 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
       mem = new MemTable(internal_comparator_);
       mem->Ref();
     }
-    vlog_head_+= log::kVHeaderSize;//日志记录的头
+    vlog_head_+= head_size;
     status = WriteBatchInternal::InsertInto(&batch, mem, vlog_head_, log_number);
     MaybeIgnoreError(&status);
     if (!status.ok()) {
@@ -496,39 +489,8 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
     }
   }
 
-  // See if we should keep reusave_manifestng the last log file.
- /* if (status.ok() && options_.reuse_logs && last_log && compactions == 0) {
-    assert(logfile_ == NULL);
-    assert(log_ == NULL);
-    assert(mem_ == NULL);
-    uint64_t lfile_size;
-    if (env_->GetFileSize(fname, &lfile_size).ok() &&
-        env_->NewAppendableFile(fname, &logfile_).ok()) {
-      Log(options_.info_log, "Reusing old log %s \n", fname.c_str());
-      log_ = new log::Writer(logfile_, lfile_size);
-      logfile_number_ = log_number;
-      if (mem != NULL) {
-        mem_ = mem;
-        mem = NULL;
-      } else {
-        // mem can be NULL if lognum exists but was empty.
-        mem_ = new MemTable(internal_comparator_);
-        mem_->Ref();
-      }
-    }
-  }
-
-  if (mem != NULL) {
-    // mem did not get reused; compact it.
-    if (status.ok()) {
-      *save_manifest = true;
-      status = WriteLevel0Table(mem, edit, NULL);
-    }
-    mem->Unref();
-  }
-*/
   if(!last_log)//vlog文件很大，一般恢复时最多同时跨两个vlog文件，第一个恢复完后，
-  {//需要从第二个vlog文件头开始恢复
+  {//第二个vlog需要从文件头开始恢复
       vlog_head_ = 0;
       if (mem != NULL) {
     //因为上面的while循环可能剩余的kv对不够刷mem，因为马上要回放下一个vlog了，需要把上一个vlog
@@ -552,14 +514,14 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
                 mem->Ref();
             }
             if (status.ok()) {
-                 *save_manifest = true;
-                 *max_sequence = *max_sequence + 1;
+                *save_manifest = true;
+                *max_sequence = *max_sequence + 1;
                 char buf[8];
-                Slice v(buf, 8);//vlog_head_用了3个字节表示大小，也就是说不能超过16M
+                Slice v(buf, 8);//vlog_head_用了3个字节表示大小，也就是说不能超过16M,有问题需要改
                 EncodeFixed64(buf, (vlog_head_ << 24) | log_number);
                 mem->Add(*max_sequence,kTypeValue, Slice("head"),v);
                 next_check_point_ = vlog_head_;//////////
-               check_point_ = next_check_point_;///////////
+                check_point_ = next_check_point_;///////////
                 status = WriteLevel0Table(mem, edit, NULL);
             }
             mem->Unref();
@@ -570,13 +532,13 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
           mem_->Ref();
       }
 
-       WritableFile* vlfile;
-       logfile_number_ = log_number;
-        std::string vlog_name = VLogFileName(dbname_, log_number);
-        status = options_.env->NewAppendableFile(vlog_name, &vlfile);//没问题，因为我们是appendablefile
-        vlogfile_ = vlfile;
-        vlog_ = new log::VWriter(vlfile);
-        vlog_manager_.SetNowVlog(log_number);
+      WritableFile* vlfile;
+      logfile_number_ = log_number;
+      std::string vlog_name = VLogFileName(dbname_, log_number);
+      status = options_.env->NewAppendableFile(vlog_name, &vlfile);//没问题，因为我们是appendablefile
+      vlogfile_ = vlfile;
+      vlog_ = new log::VWriter(vlfile);
+      vlog_manager_.SetNowVlog(log_number);
   }
 
   return status;
@@ -994,11 +956,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   assert(versions_->NumLevelFiles(compact->compaction->level()) > 0);
   assert(compact->builder == NULL);
   assert(compact->outfile == NULL);
-//  if (snapshots_.empty()) {
-    compact->smallest_snapshot = versions_->LastSequence();
-//  } else {
-//    compact->smallest_snapshot = snapshots_.oldest()->number_;
-//  }
+  compact->smallest_snapshot = versions_->LastSequence();
 
   // Release mutex while we're actually doing the compaction work
   mutex_.Unlock();//这里涉及到读写磁盘文件，所以需要避免对锁的占用
@@ -1280,11 +1238,7 @@ Status DBImpl::GetPtr(const ReadOptions& options,
   Status s;
   MutexLock l(&mutex_);
   SequenceNumber snapshot;
-//  if (options.snapshot != NULL) {
-//    snapshot = reinterpret_cast<const SnapshotImpl*>(options.snapshot)->number_;
-//  } else {
-    snapshot = versions_->LastSequence();
-//  }
+  snapshot = versions_->LastSequence();
 
   MemTable* mem = mem_;
   MemTable* imm = imm_;
@@ -1332,68 +1286,76 @@ Status DBImpl::Get(const ReadOptions& options,
         return RealValue(val, value);
 }
 
-    Status DBImpl::RealValue(Slice val_ptr, std::string* value)
+Status DBImpl::RealValue(Slice val_ptr, std::string* value)
+{
+// MutexLock l(&mutex_);//因为vlog_reader->Read不是线程安全的，有没有什么优化呢,就是每个vlog_reader一把锁
+    Status s;
+  /*  uint64_t code = DecodeFixed64(val_ptr.data());
+    size_t size = code & 0xffffff;
+    code = code>>24;
+    uint64_t file_numb = code & 0xff;
+    uint64_t pos = code>>8;*/
+    uint32_t file_numb;
+    uint64_t pos, size;
+    if(!GetVarint64(&val_ptr, &size))
+        return Status::Corruption("parse size false in RealValue");
+    if(!GetVarint32(&val_ptr, &file_numb))
+        return Status::Corruption("parse file_numb false in RealValue");
+    if(!GetVarint64(&val_ptr, &pos))
+        return Status::Corruption("parse pos false in RealValue");
+    log::VReader*  vlog_reader = vlog_manager_.GetVlog(file_numb);
+    assert(vlog_reader != NULL);
+    if(size <= 409600)
     {
- // MutexLock l(&mutex_);//因为vlog_reader->Read不是线程安全的，有没有什么优化呢
-        Status s;
-        uint64_t code = DecodeFixed64(val_ptr.data());
-        size_t size = code & 0xffffff;
-        code = code>>24;
-        uint64_t file_numb = code & 0xff;
-        uint64_t pos = code>>8;
-        log::VReader*  vlog_reader = vlog_manager_.GetVlog(file_numb);
-        assert(vlog_reader != NULL);
-//        if(size <= 409600)
-//        {
-            char buf[size];
-            bool b = vlog_reader->Read(buf, size, pos);
-            assert(b);
-            Slice input(buf, size);
-            Slice k, v;
-            char tag = input[0];
-            input.remove_prefix(1);
-            switch (tag) {
-                case kTypeValue:
-                    if (GetLengthPrefixedSlice(&input, &k) &&GetLengthPrefixedSlice(&input, &v))
-                    {
-                        value->assign(v.data(), v.size());
-                    }
-                    else
-                    {
-                        s = Status::Corruption("corrupted key for ");
-                    }
-                    break;
-                default:
+        char buf[size];
+        bool b = vlog_reader->Read(buf, size, pos);
+        assert(b);
+        Slice input(buf, size);
+        Slice k, v;
+        char tag = input[0];
+        input.remove_prefix(1);
+        switch (tag) {
+            case kTypeValue:
+                if (GetLengthPrefixedSlice(&input, &k) &&GetLengthPrefixedSlice(&input, &v))
+                {
+                    value->assign(v.data(), v.size());
+                }
+                else
+                {
                     s = Status::Corruption("corrupted key for ");
-            }
-/*        }
-        else
-        {//如果size太大，栈空间不够，就需要用堆来存放
-            char* buf = new char[size];
-            bool b = vlog_reader->Read(buf, size, pos);
-            assert(b);
-            Slice input(buf, size);
-            Slice k, v;
-            char tag = input[0];
-            input.remove_prefix(1);
-            switch (tag) {
-                case kTypeValue:
-                    if (GetLengthPrefixedSlice(&input, &k) &&GetLengthPrefixedSlice(&input, &v))
-                    {
-                        value->assign(v.data(), v.size());
-                    }
-                    else
-                    {
-                        s = Status::Corruption("corrupted key for ");
-                    }
-                    break;
-                default:
-                    s = Status::Corruption("corrupted key for ");
-            }
-            delete[] buf;
-        }*/
-        return s;
+                }
+                break;
+            default:
+                s = Status::Corruption("corrupted key for ");
+        }
     }
+    else
+    {//如果size太大，栈空间不够，就需要用堆来存放
+        char* buf = new char[size];
+        bool b = vlog_reader->Read(buf, size, pos);
+        assert(b);
+        Slice input(buf, size);
+        Slice k, v;
+        char tag = input[0];
+        input.remove_prefix(1);
+        switch (tag) {
+            case kTypeValue:
+                if (GetLengthPrefixedSlice(&input, &k) &&GetLengthPrefixedSlice(&input, &v))
+                {
+                    value->assign(v.data(), v.size());
+                }
+                else
+                {
+                    s = Status::Corruption("corrupted key for ");
+                }
+                break;
+            default:
+                s = Status::Corruption("corrupted key for ");
+        }
+        delete[] buf;
+    }
+    return s;
+}
 
 Iterator* DBImpl::NewIterator(const ReadOptions& options) {
   SequenceNumber latest_snapshot;
@@ -1401,9 +1363,6 @@ Iterator* DBImpl::NewIterator(const ReadOptions& options) {
   Iterator* iter = NewInternalIterator(options, &latest_snapshot, &seed);
   return NewDBIterator(
       this, user_comparator(), iter,
- /*     (options.snapshot != NULL
-       ? reinterpret_cast<const SnapshotImpl*>(options.snapshot)->number_
-       : latest_snapshot),*/
       latest_snapshot,
       seed);
 }
@@ -1414,17 +1373,7 @@ void DBImpl::RecordReadSample(Slice key) {
     MaybeScheduleCompaction();
   }
 }
-/*
-const Snapshot* DBImpl::GetSnapshot() {
-  MutexLock l(&mutex_);
-  return snapshots_.New(versions_->LastSequence());
-}
 
-void DBImpl::ReleaseSnapshot(const Snapshot* s) {
-  MutexLock l(&mutex_);
-  snapshots_.Delete(reinterpret_cast<const SnapshotImpl*>(s));
-}
-*/
 // Convenience methods
 Status DBImpl::Put(const WriteOptions& o, const Slice& key, const Slice& val) {
   return DB::Put(o, key, val);
@@ -1464,7 +1413,8 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
     // into mem_.
     {
       mutex_.Unlock();
-      status = vlog_->AddRecord(WriteBatchInternal::Contents(updates));
+    int head_size = 0;
+      status = vlog_->AddRecord(WriteBatchInternal::Contents(updates), head_size);
       bool sync_error = false;
       if (status.ok() && options.sync) {
         status = vlogfile_->Sync();
@@ -1472,7 +1422,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* my_batch) {
           sync_error = true;
         }
       }
-      vlog_head_+=log::kVHeaderSize;//crc32 4  size 3.日志记录头部
+     vlog_head_ += head_size;
       if (status.ok()) {
         status = WriteBatchInternal::InsertInto(updates, mem_, vlog_head_, logfile_number_);//vlog_head_代表每条kv对在vlog中的位置
       }
@@ -1600,19 +1550,18 @@ Status DBImpl::MakeRoomForWrite(bool force) {
      // assert(versions_->PrevLogNumber() == 0);
 
       imm_ = mem_;
-                //把当前vlog文件的大小记录下来，作为head对应的v值插入imm表，imm将会持久化到sst文件
-                //恢复时我们从head对应的vlog起始处开始恢复就好了，相当于设置一个检查点
-                uint64_t last_sequence = versions_->LastSequence();
-                last_sequence++;
-                char buf[8];
-                Slice v(buf, 8);
-                EncodeFixed64(buf, (vlog_head_ << 24) | logfile_number_ );
-                imm_->Add(last_sequence,kTypeValue, Slice("head"),v);
-                versions_->SetLastSequence(last_sequence);//如果sst文件写成功了，head代表vlog文件从head开始的偏移的kv是在
-                //mem，需要恢复.如果head的imm没有成功写入到sst中，那么会从上一次写入成功的head开始恢复
-               // check_point_ = vlog_head_;
-                next_check_point_ = vlog_head_;//next_check_point_ 代表将要被刷进sst，它同imm一起
-                //被刷入sst,check_point代表已经刷入到sst文件的最新check_point,其实恢复就是从该检查点开始的
+    //把当前vlog文件的大小记录下来，作为head对应的v值插入imm表，imm将会持久化到sst文件
+    //恢复时我们从head对应的vlog起始处开始恢复就好了，相当于设置一个检查点
+    uint64_t last_sequence = versions_->LastSequence();
+    last_sequence++;
+    char buf[8];
+    Slice v(buf, 8);
+    EncodeFixed64(buf, (vlog_head_ << 24) | logfile_number_ );
+    imm_->Add(last_sequence,kTypeValue, Slice("head"),v);
+    versions_->SetLastSequence(last_sequence);//如果sst文件写成功了，head代表vlog文件从head开始的偏移的kv是在
+    //mem，需要恢复.如果head的imm没有成功写入到sst中，那么会从上一次写入成功的head开始恢复
+    next_check_point_ = vlog_head_;//next_check_point_ 代表将要被刷进sst，它同imm一起
+    //被刷入sst,check_point代表已经刷入到sst文件的最新check_point,其实恢复就是从该检查点开始的
       has_imm_.Release_Store(imm_);
       mem_ = new MemTable(internal_comparator_);
       mem_->Ref();
@@ -1625,7 +1574,7 @@ Status DBImpl::MakeRoomForWrite(bool force) {
          WritableFile* vlfile;
          s = env_->NewWritableFile(VLogFileName(dbname_, new_log_number), &vlfile);
          if (!s.ok()) {
-            versions_->ReuseVlogNumber(new_log_number);////////////////
+            versions_->ReuseVlogNumber(new_log_number);
             break;
          }
          delete vlog_;
@@ -1755,9 +1704,7 @@ void DBImpl::BackgroundRecoverClean()
         uint64_t code = DecodeFixed64(val.data());
         uint64_t vlog_numb = code & 0xffffff;
         uint64_t tail = code>>24;
-        std::cout<<"tail is "<<tail<<" in "<<vlog_numb<<std::endl;
-      Log(options_.info_log, "recover clean and continue from %lu in %lu...\n",tail,vlog_numb);
-        vlog_manager_.Recover(vlog_numb, tail);
+        vlog_manager_.Recover(vlog_numb);
 
         GarbageCollector garbager(this);
         garbager.SetVlog(vlog_manager_.GetVlogToClean(), tail);
@@ -1908,7 +1855,7 @@ Status DB::Open(const Options& options, const std::string& dbname,
       s = impl->options_.env->NewSequentialFile(VLogFileName(impl->dbname_, new_log_number), &vlr_file);
       log::VReader* vlog_reader = new log::VReader(vlr_file, true,0);
       impl->vlog_manager_.AddVlog(new_log_number, vlog_reader);
-          std::cout<<"new db ,new log "<<new_log_number<<std::endl;
+      Log(impl->options_.info_log,"newdb\n");
     }
   }
   if (s.ok() && save_manifest) {
@@ -1922,7 +1869,6 @@ Status DB::Open(const Options& options, const std::string& dbname,
         s = impl->Get(read_options,"vloginfo",&val);
         if(s.ok())
         {
-            //    std::cout<<"get vloginfo ok"<<std::endl;
             impl->vlog_manager_.Deserialize(val);
             impl->bg_clean_scheduled_ = true;
             impl->env_->StartThread(&DBImpl::BGCleanRecover, impl);
@@ -1941,80 +1887,7 @@ Status DB::Open(const Options& options, const std::string& dbname,
   }
   return s;
 }
-/*    Status DBImpl::RecoverVlogFile(bool* save_manifest, VersionEdit* edit, SequenceNumber* max_sequence)
-    {
-        Status s;
-        std::string scratch;
-        Slice record;
-        WriteBatch batch;
-        int compactions = 0;
-        MemTable* mem = NULL;
-        assert(vlog_reader_->SkipToPos(vlog_head_));//////////////////////////////////////
-        while(vlog_reader_->ReadRecord(&record, &scratch))
-        {
-            WriteBatchInternal::SetContents(&batch, record);
-            if (mem == NULL) {
-                mem = new MemTable(internal_comparator_);
-                mem->Ref();
-            }
-            vlog_head_+= log::kVHeaderSize;//日志记录的头
-            s = WriteBatchInternal::InsertInto(&batch, mem, vlog_head_, 0);
-            const SequenceNumber last_seq = WriteBatchInternal::Sequence(&batch) + WriteBatchInternal::Count(&batch) - 1;
-            if (last_seq > *max_sequence)
-                *max_sequence = last_seq;
-            if (mem->ApproximateMemoryUsage() > options_.write_buffer_size) {
-                compactions++;
-                *save_manifest = true;
-                s = WriteLevel0Table(mem, edit, NULL);
-                mem->Unref();
-                mem = NULL;
-                if (!s.ok()) {
- //cout
-                    break;
-                }
-            }
-        }
-        if(s.ok() && options_.reuse_logs && compactions == 0)
-        {//重用上一个checkpoint，mem暂不刷入sst
-            if(mem != NULL)
-            {
-                mem_ = mem;
-            }
-            else
-            {
-                mem_ = new MemTable(internal_comparator_);
-                mem_->Ref();
-            }
-            return s;
-        }
-        //说明不能重用，必须刷mem，并创建新的重启点
 
-        if(!(compactions == 0 && mem == NULL))//rcompactions == 0 && mem == NULL不用创建新的重启点
-        {
-        //针对 刚好恢复完vlog恰好mem为空 的情况
-            if(mem == NULL)
-            {
-            mem = new MemTable(internal_comparator_);
-            mem->Ref();
-            }
-            if (s.ok()) {
-                 *save_manifest = true;
-                 *max_sequence = *max_sequence + 1;
-                mem->Add(*max_sequence,kTypeValue, Slice("head"),std::to_string(vlog_head_));
-                next_check_point_ = vlog_head_;
-               check_point_ = next_check_point_;
-                s = WriteLevel0Table(mem, edit, NULL);
-            }
-            mem->Unref();
-        }
-            if(s.ok())
-            {
-                mem_ = new MemTable(internal_comparator_);
-                mem_->Ref();
-            }
-        return s;
-    }
-*/
 Snapshot::~Snapshot() {
 }
 
@@ -2046,7 +1919,6 @@ Status DestroyDB(const std::string& dbname, const Options& options) {
     env->DeleteFile(lockname);
     env->DeleteDir(dbname);  // Ignore error in case dir contains other files
   }
-//  env->DeleteFile("vlog");
   return result;
 }
 

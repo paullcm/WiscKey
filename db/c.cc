@@ -537,13 +537,13 @@ void leveldb_readoptions_set_fill_cache(
     leveldb_readoptions_t* opt, unsigned char v) {
   opt->rep.fill_cache = v;
 }
-
+/*
 void leveldb_readoptions_set_snapshot(
     leveldb_readoptions_t* opt,
     const leveldb_snapshot_t* snap) {
   opt->rep.snapshot = (snap ? snap->rep : NULL);
 }
-
+*/
 leveldb_writeoptions_t* leveldb_writeoptions_create() {
   return new leveldb_writeoptions_t;
 }

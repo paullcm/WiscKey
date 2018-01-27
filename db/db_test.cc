@@ -347,7 +347,7 @@ class DBTest {
 
   std::string Get(const std::string& k, const Snapshot* snapshot = NULL) {
     ReadOptions options;
-    options.snapshot = snapshot;
+   // options.snapshot = snapshot;
     std::string result;
     Status s = db_->Get(options, k, &result);
     if (s.IsNotFound()) {
@@ -856,7 +856,7 @@ TEST(DBTest,garbage)
     //重复的kv对drop时才会触发垃圾回收
     DelayMilliseconds(1000);
 }
-
+*/
 TEST(DBTest,CleanVlog)
 {
       Options options = CurrentOptions();
@@ -873,19 +873,25 @@ TEST(DBTest,CleanVlog)
     dbfull()->CleanVlog();
 //    ASSERT_OK();
 }
-*/
+
 TEST(DBTest, ReadWrite) {
   do {
-    ASSERT_OK(Put("", ""));
-    ASSERT_EQ("", Get(""));
+    uint64_t size = 1*1024*1024*1024;
+    size = size *4 - 1;
+ //   char* b = new char[2*1024*1024*1024];
+    std::string big(size,'1');
+ //   std::string big(b, 2*1024*1024*1024);
+ //   ASSERT_OK(Put("", big));
     ASSERT_OK(Put("foo", "v1"));
     ASSERT_EQ("v1", Get("foo"));
     ASSERT_OK(Put("bar", "v2"));
+  //  ASSERT_EQ(big, Get(""));
     ASSERT_OK(Put("foo", "v3"));
  //   dbfull()->TEST_Clean();
  //   sleep(10);
     ASSERT_EQ("v3", Get("foo"));
     ASSERT_EQ("v2", Get("bar"));
+  //  delete[] b;
   } while (ChangeOptions());
 }
 
@@ -2255,17 +2261,17 @@ class ModelDB: public DB {
     return Status::NotFound(key);
   }
   virtual Iterator* NewIterator(const ReadOptions& options) {
-    if (options.snapshot == NULL) {
+//    if (options.snapshot == NULL) {
       KVMap* saved = new KVMap;
       *saved = map_;
       return new ModelIter(saved, true);
-    } else {
-      const KVMap* snapshot_state =
-          &(reinterpret_cast<const ModelSnapshot*>(options.snapshot)->map_);
-      return new ModelIter(snapshot_state, false);
-    }
+ /*   } else {*/
+      //const KVMap* snapshot_state =
+          //&(reinterpret_cast<const ModelSnapshot*>(options.snapshot)->map_);
+      //return new ModelIter(snapshot_state, false);
+   /*// }*/
   }
-  virtual const Snapshot* GetSnapshot() {
+/*  virtual const Snapshot* GetSnapshot() {
     ModelSnapshot* snapshot = new ModelSnapshot;
     snapshot->map_ = map_;
     return snapshot;
@@ -2273,7 +2279,7 @@ class ModelDB: public DB {
 
   virtual void ReleaseSnapshot(const Snapshot* snapshot) {
     delete reinterpret_cast<const ModelSnapshot*>(snapshot);
-  }
+  }*/
   virtual Status Write(const WriteOptions& options, WriteBatch* batch) {
     class Handler : public WriteBatch::Handler {
      public:
@@ -2349,9 +2355,9 @@ static bool CompareIterators(int step,
                              const Snapshot* model_snap,
                              const Snapshot* db_snap) {
   ReadOptions options;
-  options.snapshot = model_snap;
+ // options.snapshot = model_snap;
   Iterator* miter = model->NewIterator(options);
-  options.snapshot = db_snap;
+ // options.snapshot = db_snap;
   Iterator* dbiter = db->NewIterator(options);
   bool ok = true;
   int count = 0;

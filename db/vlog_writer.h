@@ -25,7 +25,7 @@ class VWriter {
 
   ~VWriter();
 
-  Status AddRecord(const Slice& slice);
+  Status AddRecord(const Slice& slice, int& head_size);
 
  private:
   WritableFile* dest_;
