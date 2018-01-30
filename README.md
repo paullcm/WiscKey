@@ -53,3 +53,38 @@ Compaction过程需要被删除的数据由于只是删除了Key，Value还保�
 - address里多出来了file_numb用来表示value所在的vlog文件的编号
 - 在imm生成sst文件前，在imm中加入一条kv记录<"head", <file_numb,pos>>,pos的含义就是在vlog中的偏移，代表在pos以前的kv记录已经成功写入到了sst文件,file_numb代表的是从哪个vlog文件进行恢复
 - 为了防止崩溃或者db关闭，需要定期将lsm已经清除的过期版本的kv记录数持久化，用put("vloginfo",各个vlog文件中已经被lsm清理的垃圾记录总数)。
+
+# 性能
+ 
+ ## 测试环境1
+ 创建一个100万条kv记录的数据库，其中每条记录的key为16个字节，value为100个字节，我们没有开启snappy压缩，所以写入磁盘的文件大小就是数据的原始大小，其余参数都是option的默认值。
+ 
+    LevelDB:    version 1.20
+    Date:       Mon Jan 29 17:39:13 2018
+    CPU:        24 * Intel(R) Xeon(R) CPU E5-2620 0 @ 2.00GHz
+    CPUCache:   15360 KB
+    Keys:       16 bytes each
+    Values:     100 bytes each (50 bytes after compression)
+    Entries:    1000000
+    Raw Size:   110.6 MB (estimated)
+    File Size:  62.9 MB (estimated)
+    WARNING: Snappy compression is not enabled
+
+ ## 写性能
+
+ leveldb
+ 
+    fillseq      :       5.817 micros/op;   19.0 MB/s     
+    fillsync     :   16151.499 micros/op;    0.0 MB/s (1000 ops)
+    fillrandom   :      11.370 micros/op;    9.7 MB/s     
+    overwrite    :      15.211 micros/op;    7.3 MB/s
+ 
+ WiscKey
+ 
+    fillseq      :       6.461 micros/op;   17.1 MB/s     
+    fillsync     :   16034.868 micros/op;    0.0 MB/s (1000 ops)
+    fillrandom   :       7.848 micros/op;   14.1 MB/s     
+    overwrite    :       8.467 micros/op;   13.1 MB/s
+
+ 分析：可以看出fillseq（顺序写，即各sst文件直接没有范围冲突）WiscKey并不占优势，因为是顺序写，所以对应leveldb，各个sst文件间没有范围冲突，因此可以快速合并。但对于WiscKey，因为在dump immemtable生成level0文件时，会插入一条head记录，这就导致了第0层的文件总是范围冲突的，需要合并，所以WiscKey慢，以后的版本会在这里优化。 fillrandom（随机写，即各sst文件范围冲突概率很大）以及overwrite（覆盖写，即各sst文件范围冲突概率很大），因为WiscKey是kv分离的，所以合并速度快于leveldb，自然fillrandom以及overwrite更快。
+ 
